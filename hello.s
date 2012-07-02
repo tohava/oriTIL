@@ -1,24 +1,33 @@
+;;; register jobs:
+;;; %rax - instruction pointer
+;;; %rbx - ip stack pointer
+;;; %rcx - return value
+;;; %rsp - data stack pointer
+;;; %rbp - saves stack pointer for λs
         .text
         .global _start
 _start:
         mov $retstack-8, %rbx
         mov $data-8, %rax
 
-        
-        
 inside:
-        add $8, %rax
-        jmp *(%rax)
+        add $8, %rax            
+        push (%rax)             ; function address now also includes a base pointer
+        jmp *(%eax)
 
 enter:
-        add $8, %rbx
-        mov %rax, (%rbx)
+        add $4, %rbx
+        mov %eax, (%rbx)
+        add $4, %rbx
+        mov %ebp, (%rbx)
         jmp inside
         
 return:
-        sub $8, %rbx
-        mov 8(%rbx), %rax
-        
+        sub $4, %rbx
+        mov 4(%rbx), %ebp
+        sub $4, %rbx
+        mov 4(%rbx), %eax
+        jmp inside
 hello:
         push %rax
         push %rbx
