@@ -26,11 +26,12 @@
 
 (define (compile-primitive p bindings)
   (match p
-    ['+    '(til_push_fake_frame til_push_half til_add)]
-    ['-    '(til_push_fake_frame til_push_half til_sub)]
-    ['*    '(til_push_fake_frame til_push_half til_mult)]
-    ['/    '(til_push_fake_frame til_push_half til_div)]
-    ['sqrt '(til_push_fake_frame til_push_half til_sqrt)]
+    ['+              '(til_push_fake_frame til_push_half til_add)]
+    ['-              '(til_push_fake_frame til_push_half til_sub)]
+    ['*              '(til_push_fake_frame til_push_half til_mult)]
+    ['/              '(til_push_fake_frame til_push_half til_div)]
+    ['sqrt           '(til_push_fake_frame til_push_half til_sqrt)]
+    ['display-int    '(til_push_fake_frame til_push_half til_display_int)]
     [_ #f]))
 
 (define (compile-binding b bindings)
@@ -68,7 +69,7 @@
     (map display (list 
                   "params is: "       params       "\n"
                   "new-bindings is: " new-bindings "\n")) 
-    (list 'til_push_frame 'til_push_half (append (compile-code body new-bindings) `(popret ,(length params)) ))))
+    (list 'til_push_frame 'til_push_half (append (compile-code body new-bindings) `(popret ,(* (+ (length params) 1) 8))))))
     
 (define (compile-code code bindings)
   (match code 
@@ -98,7 +99,7 @@
     (if (empty? newlambdas)
         oldlambdas
         (flatten-lambdas (append newlambdas oldlambdas))))
-  (flatten-lambdas (list (list 'main code))))
+  (flatten-lambdas (list (list 'main (append code (list 'til_exit))))))
 
 (define (replace-list-pattern lst pattern newpattern)
   (display "(replace-list-pattern ") (display lst) (display " ") (display pattern) (display " ") (display newpattern) (display ")\n")
@@ -136,7 +137,8 @@
             lambdas))
 
 (define (output lambdas)
-  (delete-file "compiled.s")
+  (and (file-exists? "compiled.s")
+       (delete-file "compiled.s"))
   (call-with-output-file "compiled.s"
     (λ (out)
       (call-with-input-file "prologue.s"
@@ -168,4 +170,4 @@
 
 
 
-(define code '((λ (a b c) (* (+ a ((λ (x) (* x x)) b)) c)) 2 3 4))
+(define code '(display-int ((λ (a b c) (* (+ a ((λ (x) (* x x)) b)) c)) 2 3 4)))

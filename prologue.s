@@ -10,6 +10,7 @@
 _start:
         mov $retstack-8, %rbx
         mov $main-8, %rcx
+        mov %rsp, %rbp
         jmp til_inside
         
         .data
