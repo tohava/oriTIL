@@ -10,7 +10,7 @@
   (range-helper x 0))
  
 (define (tdisplay x)
-  (display x) x)
+  (display x) (newline) x)
 
 (define (assmap f x)
   (map (λ (x) (list (car x) (f (cadr x)))) x))
@@ -30,20 +30,25 @@
     ['-              '(til_push_fake_frame til_push_half til_sub)]
     ['*              '(til_push_fake_frame til_push_half til_mult)]
     ['/              '(til_push_fake_frame til_push_half til_div)]
+    ['=              '(til_push_fake_frame til_push_half til_eq)]
     ['sqrt           '(til_push_fake_frame til_push_half til_sqrt)]
     ['display-int    '(til_push_fake_frame til_push_half til_display_int)]
     [_ #f]))
 
-(define (compile-binding b bindings)
-  (define (compile-binding-helper b bindings l)
-    (define n2s number->string)
-    (display (list 'compile-binding-helper b bindings l)) (newline)
+(define (get-binding b bindings)
+  (define (get-binding-helper b bindings l)
     (if (empty? bindings)
         #f
         (match (assq b (car bindings))
-          [#f               (compile-binding-helper b (cdr bindings) l)]
-          [(list b address) (list (string->symbol (string-append "var_" (n2s l) "_" (n2s address))))])))
-  (compile-binding-helper b bindings 0))
+          [#f               (get-binding-helper b (cdr bindings) l)]
+          [(list b address) (cons l address)])))
+  (get-binding-helper b bindings 0))
+
+(define n2s number->string)
+
+(define (compile-binding v bindings)
+  (define b (get-binding v bindings))
+  (and b (list (string->symbol (string-append "var_" (n2s (car b)) "_" (n2s (cdr b)))))))
 
 (define (fail-f x)
   (if x x (error "failed on false")))
@@ -71,11 +76,55 @@
                   "new-bindings is: " new-bindings "\n")) 
     (list 'til_push_frame 'til_push_half (append (compile-code body new-bindings) `(popret ,(* (+ (length params) 1) 8))))))
     
+(define (compile-let ribs body)
+  (define params (map car ribs))
+  (define values (map cadr ribs))
+  `((λ ,params ,@body) ,@values))
+
+(define (compile-let* ribs body)
+  (foldr
+   (λ (rib bodyacc) 
+     (if (eq? bodyacc body)
+         `(let (,rib) ,@bodyacc)
+         `(let (,rib) ,bodyacc)))
+   body
+   ribs))
+
+(define (compile-letrec ribs body)
+  (define params (map car ribs))
+  (define dead-ribs (map (λ (x) `(,x 0)) params))
+  (define sets (map (λ (x) `(set! ,@x)) ribs))
+  `(let ,dead-ribs (begin ,@sets ,@body)))
+
+(define (compile-begin list bindings)
+  (apply append (map (λ (x)
+                       (let ([compiled (compile-code list bindings)])
+                         (if (eq? x (car list))
+                             compiled
+                             (cons 'til_drop compiled))))
+                     list)))
+                           
+(define (compile-set! v value bindings)                      
+  (define b (get-binding v bindings))
+  (append (compile-code value bindings) 
+          (list (string->symbol (string-append "set_" (n2s (car b)) "_" (n2s (cdr b)))))))
+
+(define (compile-if cond true false)
+  `(? ,cond (λ () ,true) (λ () ,false)))
+
 (define (compile-code code bindings)
-  (match code 
-    [(list 'λ params body) (compile-λ params body bindings)]
-    [(cons f params)      (compile-apply f params bindings)]
-    [simple               (compile-simple simple bindings)]
+  (tdisplay bindings)
+  (match (tdisplay code)
+    [(cons 'let (cons ribs body))    (compile-code (compile-let ribs body) bindings)]
+    [(cons 'let* (cons ribs body))   (compile-code (compile-let* ribs body) bindings)]
+    [(cons 'letrec (cons ribs body)) (compile-code (compile-letrec ribs body) bindings)]
+    [(list 'if cond true false)      (compile-code (compile-if cond true false) bindings)]
+    
+    [(cons 'begin rest)       (compile-begin rest bindings)]
+    [(list 'λ params body)    (compile-λ params body bindings)]
+    [(cons f params)          (compile-apply f params bindings)]
+    [(list 'set! param value) (compile-set! param value bindings)]
+    [simple                   (compile-simple simple bindings)]
     ))
 
 (define (flatten-code code)
@@ -170,4 +219,17 @@
 
 
 
-(define code '(display-int ((λ (a b c) (* (+ a ((λ (x) (* x x)) b)) c)) 2 3 4)))
+(define code1 '(display-int ((λ (a b c) (* (+ a ((λ (x) (* x x)) b)) c)) 2 3 4))) ; should output 44
+(define code2
+  '(letrec 
+       ([other (λ (src dst)
+                 (- 6 (+ src dst)))]
+        [hanoi (λ (src dst count)
+                 (if (= 1 count) 
+                     (display-int (+ (* 10 src) dst))
+                     (begin
+                       (hanoi src (other src dst) (- count 1))
+                       (hanoi src dst             1          )
+                       (hanoi (other src dst)     dst        ))))])
+     (hanoi 1 3 3)))
+                         
