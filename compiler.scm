@@ -177,8 +177,8 @@
 (define (maybe-append l1 l2)
   (and l1 l2 (append l1 l2)))
 
-(define (compare-pattern lst pattern with-rest)
-  (define (chew-one-token) (compare-pattern (cdr lst) (cdr pattern) with-rest))
+(define (compare-pattern lst pattern with-rest conditions)
+  (define (chew-one-token) (compare-pattern (cdr lst) (cdr pattern) with-rest conditions))
   (cond
     [(empty? pattern)                 (if with-rest (list lst) '())]
     [(empty? lst)                      #f]
@@ -186,15 +186,15 @@
           (eq? (caar pattern) 'quote)) (and (eq? (cadar pattern) (car lst))
                                             (chew-one-token))]
     [(list? (car pattern))             (and (list? (car lst))
-                                            (maybe-append (compare-pattern (car lst) (car pattern) with-rest)
+                                            (maybe-append (compare-pattern (car lst) (car pattern) with-rest conditions)
                                                           (chew-one-token)))]
     [(eq? '_ (car pattern))            (chew-one-token)]
     [(symbol? (car pattern))           (maybe-cons (map car (list pattern lst)) 
                                                    (chew-one-token))]
     [else (error "Bad pattern")]))
 
-(define (replace-list-pattern lst pattern newpattern)
-  (define compare (λ (x y) (compare-pattern x y #t)))
+(define (replace-list-pattern lst pattern newpattern conditions)
+  (define compare (λ (x y) (compare-pattern x y #t conditions)))
   (define (assign pattern matches)
     matches
     (match pattern
@@ -204,23 +204,23 @@
   (if (empty? lst)
       '()
       (match (compare lst pattern)
-        [#f (cons   (car lst)             (replace-list-pattern (cdr lst) pattern newpattern))]
-        [m  (append (assign newpattern m) (replace-list-pattern (last m)  pattern newpattern))])))
+        [#f (cons   (car lst)             (replace-list-pattern (cdr lst) pattern newpattern conditions))]
+        [m  (append (assign newpattern m) (replace-list-pattern (last m)  pattern newpattern conditions))])))
 
-(define (match-list-pattern lst pattern)
-  (define compare (λ (x y) (compare-pattern x y #f)))
+(define (match-list-pattern lst pattern conditions)
+  (define compare (λ (x y) (compare-pattern x y #f conditions)))
   (if (empty? lst)
       '()
       (match (compare lst pattern)
-        [#f (match-list-pattern (cdr lst) pattern)]
-        [m  (cons m (match-list-pattern (cdr lst) pattern))])))
+        [#f (match-list-pattern (cdr lst) pattern '())]
+        [m  (cons m (match-list-pattern (cdr lst) pattern '()))])))
 
 (define (optimize-calls lambdas)
   ; TODO: this should only be done on code begins, and not data
   (til-lambda-map-body
    (λ (code)
      (foldl (λ (transform code)
-              (replace-list-pattern code (car transform) (cadr transform)))
+              (replace-list-pattern code (car transform) (cadr transform) '()))
             code
             '( 
               (('til_lambdify x 'til_call) (x))
@@ -255,7 +255,10 @@
                      (cadr lam))
            (display "\n"))
          lambdas)))
+
+;(define (flatten-inlines-on-code x)
   
+
 (define (compile-dumb code)
   (let* ([code (optimize-calls (flatten-code (compile-code code '())))]
          [to-inline (called-once-lambdas code)])
@@ -279,7 +282,7 @@
   (for-each
    (λ (code)
      (for-each (λ (result) (hash-inc! h (cadar result)))
-               (match-list-pattern code '(('til_push_frame _) x) )))
+               (match-list-pattern code '(('til_push_frame _) x) '() )))
    (map til-lambda-body lambdas))
   (hash-for-each h
                  (λ (k v)
@@ -320,7 +323,7 @@
     (and (set-member? to-inline name)
          (find-lambda name lambdas)))
   (define (self code) (inline-lambdas-in-code code lambdas to-inline))
-  (let ([call (maybe-car code)])
+  (let ([call (maybe-car code)]) 
     (cond 
       [(not call) '()]
       [(til-inline? call) (til-inline (self (til-inline-body call)))]
@@ -332,8 +335,8 @@
                                      (self rest))))]
       [else (let ([body (find call)])
               (cons (if body (til-inline body) call)
-                    (self (cdr code))))])))
-
+                    (self (cdr code))))]))) 
+  
 (define (for-each-sublist f l)
   (f l)
   (if (empty? l)
