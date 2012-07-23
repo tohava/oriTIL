@@ -4,7 +4,7 @@
 (require racket/mpair)
  
 (struct til-anon-lambda (param-count body) #:transparent)
-(struct til-lambda (name param-count body) #:transparent)
+(struct til-lambda (name param-count body) #:transparent #:mutable)
 (struct til-inline (body)                  #:transparent)
 
 (define (til-anon-lambda->til-lambda name tal)
@@ -81,7 +81,7 @@
 
 (define (compile-simple simple bindings)
   (cond
-    [(number? (tdisplay "simple: " simple)) (list 'til_push simple)]
+    [(number? simple) (list 'til_push simple)]
     [(symbol? simple) (fail-f (or (compile-primitive simple bindings)
                                   (compile-binding simple bindings)))]
     [else             (error "compile-simple cond error")]))
@@ -157,7 +157,7 @@
   (define (flatten-lambdas lambdas)
     (define flattened-once
       (mapfoldl (λ (x newlambdas)
-                  (let ([flattened (tdisplay "flattened" (flatten-single (til-lambda-body x) newlambdas))])
+                  (let ([flattened (flatten-single (til-lambda-body x) newlambdas)])
                     (cons (car flattened) (struct-copy til-lambda x [body (cdr flattened)]))))
                 '()
                 lambdas))
@@ -172,7 +172,7 @@
   (and xs (cons x xs)))
 
 (define (maybe-car x)
-  (and x (car x)))
+  (and x (not (empty? x)) (car x)))
 
 (define (maybe-append l1 l2)
   (and l1 l2 (append l1 l2)))
@@ -256,10 +256,15 @@
            (display "\n"))
          lambdas)))
   
-(define (compile code)
+(define (compile-dumb code)
   (let* ([code (optimize-calls (flatten-code (compile-code code '())))]
          [to-inline (called-once-lambdas code)])
     code))
+
+(define (compile code)
+  (define lambdas (compile-dumb code))
+  (inline-lambdas! lambdas (tdisplay "called-once" (called-once-lambdas lambdas)))
+  lambdas)
 
 ; should do called-once-lambdas
 
@@ -291,7 +296,6 @@
 (define (til-func-param-count x)
   (if (is-til-func x)
       (begin
-        (tdisplay "til-func-param-count" x)
         (match x
           [(list 'til_prm _ _) 0]
           [(list 'til_push_frame _) 0]
@@ -306,33 +310,62 @@
 (define (find-lambda name lambdas) 
   (maybe-car (memf (λ (x) (eq? (til-lambda-name x) name)) lambdas)))
 
+(define (update-lambda-code! name code lambdas)
+  (let ([c (maybe-car (memf (λ (x) (eq? (til-lambda-name x) name)) lambdas))])
+    (and c (set-til-lambda-body! c code))))
+
 (define (inline-lambdas-in-code code lambdas to-inline)
+  (tdisplay "inline-lambdas-in-code" (list code lambdas to-inline))
   (define (find name) 
-    (and (memq name to-inline)
+    (and (set-member? to-inline name)
          (find-lambda name lambdas)))
   (define (self code) (inline-lambdas-in-code code lambdas to-inline))
   (let ([call (maybe-car code)])
     (cond 
+      [(not call) '()]
       [(til-inline? call) (til-inline (self (til-inline-body call)))]
       [(is-til-func call) (call-with-values 
                            (λ () 
-                             (split-at (+ 1 (til-func-param-count call))
-                                       code))
+                             (split-at code (+ 1 (til-func-param-count call))))
                            (λ (unchanged rest)
                              (append unchanged
-                                     (inline-lambdas-in-code rest to-inline))))]
-      [(not call) '()]
+                                     (self rest))))]
       [else (let ([body (find call)])
               (cons (if body (til-inline body) call)
-                    (inline-lambdas-in-code (cdr code) to-inline)))])))
+                    (self (cdr code))))])))
 
-(define (inline-lambdas lambdas to-inline)
-  (define order (inline-order lambdas))
-  (λ (scc) 
-    (let ([scc (filter (λ (x) (set-member to-inline x)) scc)])
-      TODO: continue from here
-  (inline-lambda-worker
+(define (for-each-sublist f l)
+  (f l)
+  (if (empty? l)
+      (void)
+      (for-each-sublist f (cdr l))))
 
+(define (inline-lambdas! lambdas to-inline)
+  (define order (tdisplay "order" (inline-order lambdas)))
+  (define (filter-scc scc) (filter (λ (x) (set-member? to-inline x)) scc))
+  (define (find name) (find-lambda name lambdas))
+  (define (update! name code) (update-lambda-code! name code lambdas))
+  (for-each-sublist (λ (sccs-sublist) 
+                      (tdisplay "sccs-sublist" sccs-sublist)
+                      (if (or (empty? sccs-sublist)
+                              (empty? (cdr sccs-sublist)))
+                          (void)
+                          (let ([scc (filter-scc (car sccs-sublist))]
+                                [calling-sccs (tdisplay "calling-sccs" (cdr sccs-sublist))])
+                            (for-each (λ (calling-scc) 
+                                        (tdisplay "calling-scc" calling-scc)
+                                        (for-each (λ (name)
+                                                    (tdisplay "calling-lambda" name)
+                                                    (update! name 
+                                                             (inline-lambdas-in-code 
+                                                              (til-lambda-body 
+                                                               (find name)) 
+                                                              lambdas
+                                                              to-inline)))
+                                                  calling-scc))
+                                      calling-sccs))))
+                    order))
+                    
 (define (map-calls f body)
   (if (empty? body)
       '()
@@ -349,7 +382,7 @@
   (define vertices (map til-lambda-name lambdas))
   (define (neighbors v)
     (map-calls (λ (x) (if (is-til-func x) '() `(,(car x)))) 
-               (til-lambda-body (find-lambda (tdisplay "find-lambda" v) lambdas))))
+               (til-lambda-body (find-lambda v lambdas))))
   (define (index v) (and (hash-has-key? index-table v)
                          (hash-ref index-table v)))
   (define (lowlink v) (and (hash-has-key? lowlink-table v)
@@ -374,9 +407,6 @@
             (pop-scc-worker)))
       (set! sccs (mcons '() sccs))
       (pop-scc-worker))
-    (tdisplay "strong-connect" v)
-    (tdisplay "strong-connect" (get-index v))
-    (tdisplay "strong-connect" (get-lowlink v))
     (set-index! v index)
     (set-lowlink! v index)
     (set! index (add1 index))
@@ -391,7 +421,6 @@
                      (strong-connect w)
                      (set-lowlink! v (min (get-lowlink v) (get-lowlink w))))]))
               (neighbors v))
-    (tdisplay "strong-connect-done" (list (get-lowlink v) (get-index v)))
     (and (= (get-lowlink v) (get-index v))
          (pop-scc)))
   (for-each strong-connect vertices)
