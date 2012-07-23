@@ -1,9 +1,11 @@
 #lang racket
 
 (require racket/match)
-
+(require racket/mpair)
+ 
 (struct til-anon-lambda (param-count body) #:transparent)
 (struct til-lambda (name param-count body) #:transparent)
+(struct til-inline (body)                  #:transparent)
 
 (define (til-anon-lambda->til-lambda name tal)
   (til-lambda name 
@@ -79,7 +81,7 @@
 
 (define (compile-simple simple bindings)
   (cond
-    [(number? simple) (list 'til_push simple)]
+    [(number? (tdisplay "simple: " simple)) (list 'til_push simple)]
     [(symbol? simple) (fail-f (or (compile-primitive simple bindings)
                                   (compile-binding simple bindings)))]
     [else             (error "compile-simple cond error")]))
@@ -88,10 +90,10 @@
   (let ([new-bindings (cons
                        (map list params (range (length params)))
                        bindings)])
-    (list 'til_push_frame 'til_lambdify (til-anon-lambda (length params)
-                                                         (append
-                                                          (compile-code body new-bindings) 
-                                                          `(popret ,(* (+ (length params) 1) 8)))))))
+    (list '(til_push_frame 0) 'til_lambdify (til-anon-lambda (length params)
+                                                             (append
+                                                              (compile-code body new-bindings) 
+                                                              `(til_popret ,(* (+ (length params) 1) 8)))))))
 
 (define (compile-let ribs body)
   (define params (map car ribs))
@@ -169,6 +171,9 @@
 (define (maybe-cons x xs)
   (and xs (cons x xs)))
 
+(define (maybe-car x)
+  (and x (car x)))
+
 (define (maybe-append l1 l2)
   (and l1 l2 (append l1 l2)))
 
@@ -180,8 +185,9 @@
     [(and (list? (car pattern)) 
           (eq? (caar pattern) 'quote)) (and (eq? (cadar pattern) (car lst))
                                             (chew-one-token))]
-    [(list? (car pattern))             (maybe-append (compare-pattern (car lst) (car pattern) with-rest)
-                                                     (chew-one-token))]
+    [(list? (car pattern))             (and (list? (car lst))
+                                            (maybe-append (compare-pattern (car lst) (car pattern) with-rest)
+                                                          (chew-one-token)))]
     [(eq? '_ (car pattern))            (chew-one-token)]
     [(symbol? (car pattern))           (maybe-cons (map car (list pattern lst)) 
                                                    (chew-one-token))]
@@ -251,7 +257,11 @@
          lambdas)))
   
 (define (compile code)
-  (optimize-calls (flatten-code (compile-code code '()))))
+  (let* ([code (optimize-calls (flatten-code (compile-code code '())))]
+         [to-inline (called-once-lambdas code)])
+    code))
+
+; should do called-once-lambdas
 
 (define (hash-inc! h k)
   (if (hash-has-key? h k)
@@ -263,9 +273,9 @@
   (define called-once (set))
   (for-each
    (λ (code)
-     (for-each (λ (result) (hash-inc! h (cadar (tdisplay result))))
-               (match-list-pattern code '('til_push_frame x) )))
-   (map cadr lambdas))
+     (for-each (λ (result) (hash-inc! h (cadar result)))
+               (match-list-pattern code '(('til_push_frame _) x) )))
+   (map til-lambda-body lambdas))
   (hash-for-each h
                  (λ (k v)
                    (and (= v 1) 
@@ -273,31 +283,119 @@
   called-once)
 
 (define (is-til-func x)
-  (error "TODO"))
+  (if (pair? x)
+      (is-til-func (car x))
+      (string=? (substring (symbol->string x) 0 3) "til")))
+      
 
 (define (til-func-param-count x)
-  (error "TODO"))
+  (if (is-til-func x)
+      (begin
+        (tdisplay "til-func-param-count" x)
+        (match x
+          [(list 'til_prm _ _) 0]
+          [(list 'til_push_frame _) 0]
+          ['til_push_fake_frame 0]
+          ['til_mult 0]
+          ['til_popret 1]
+          ['til_push 1]
+          ['til_add 0]
+          ['til_exit 0]))
+      0))
+
+(define (find-lambda name lambdas) 
+  (maybe-car (memf (λ (x) (eq? (til-lambda-name x) name)) lambdas)))
 
 (define (inline-lambdas-in-code code lambdas to-inline)
-  (define (inline-code code offset)
-    
-  (define (worker code lambdas to-inline local-count)
-    (let ([call (car code)])
-      (cond [match (inline-code (find-lambda-body (assq 'func match)) 
-                                (assq 'offset match))]  ; TODO: it is inefficient to call compile-code every time, we should memoize
-            [(is-til-func call) 
-             (call-with-values 
-              (λ () 
-                (split-at (+ 1 (til-func-param-count call))
-                          code))
-              (λ (unchanged rest)
-                (append unchanged
-                        (inline-lambdas-in-code rest to-inline))))]
-            [else (error "bad match")])))
-  5)
-               
-  
-  
+  (define (find name) 
+    (and (memq name to-inline)
+         (find-lambda name lambdas)))
+  (define (self code) (inline-lambdas-in-code code lambdas to-inline))
+  (let ([call (maybe-car code)])
+    (cond 
+      [(til-inline? call) (til-inline (self (til-inline-body call)))]
+      [(is-til-func call) (call-with-values 
+                           (λ () 
+                             (split-at (+ 1 (til-func-param-count call))
+                                       code))
+                           (λ (unchanged rest)
+                             (append unchanged
+                                     (inline-lambdas-in-code rest to-inline))))]
+      [(not call) '()]
+      [else (let ([body (find call)])
+              (cons (if body (til-inline body) call)
+                    (inline-lambdas-in-code (cdr code) to-inline)))])))
+
+(define (inline-lambdas lambdas to-inline)
+  (define order (inline-order lambdas))
+  (λ (scc) 
+    (let ([scc (filter (λ (x) (set-member to-inline x)) scc)])
+      TODO: continue from here
+  (inline-lambda-worker
+
+(define (map-calls f body)
+  (if (empty? body)
+      '()
+      (let ([call (car body)])
+        (call-with-values
+         (λ ()
+           (split-at body (+ 1 (til-func-param-count call))))
+         (λ (taken rest)
+           (append (f taken) (map-calls f rest)))))))
+
+(define (inline-order lambdas)
+  (define index-table (make-hash))
+  (define lowlink-table (make-hash))
+  (define vertices (map til-lambda-name lambdas))
+  (define (neighbors v)
+    (map-calls (λ (x) (if (is-til-func x) '() `(,(car x)))) 
+               (til-lambda-body (find-lambda (tdisplay "find-lambda" v) lambdas))))
+  (define (index v) (and (hash-has-key? index-table v)
+                         (hash-ref index-table v)))
+  (define (lowlink v) (and (hash-has-key? lowlink-table v)
+                           (hash-ref lowlink-table v)))
+  (define (set-index! v i) (hash-set! index-table v i))
+  (define (set-lowlink! v i) (hash-set! lowlink-table v i))
+  (tarjan vertices neighbors index set-index! lowlink set-lowlink!))
+
+(define (tarjan vertices neighbors get-index set-index! get-lowlink set-lowlink!)
+  (define index 0)
+  (define stack '())
+  (define stackset (set))
+  (define sccs '())
+  (define (strong-connect v)
+    (define (pop-scc) 
+      (define (pop-scc-worker)
+        (define w (car stack))
+        (set! stack (cdr stack))
+        (set! stackset (set-remove stackset w))
+        (set-mcar! sccs (cons w (mcar sccs)))
+        (or (eq? w v)
+            (pop-scc-worker)))
+      (set! sccs (mcons '() sccs))
+      (pop-scc-worker))
+    (tdisplay "strong-connect" v)
+    (tdisplay "strong-connect" (get-index v))
+    (tdisplay "strong-connect" (get-lowlink v))
+    (set-index! v index)
+    (set-lowlink! v index)
+    (set! index (add1 index))
+    (set! stack (cons v stack))
+    (set! stackset (set-add stackset v))
+    (for-each (λ (w)
+                (cond 
+                  [(set-member? stackset w)
+                   (set-lowlink! v (min (get-lowlink v) (get-index w)))]
+                  [(not (get-index w))
+                   (begin
+                     (strong-connect w)
+                     (set-lowlink! v (min (get-lowlink v) (get-lowlink w))))]))
+              (neighbors v))
+    (tdisplay "strong-connect-done" (list (get-lowlink v) (get-index v)))
+    (and (= (get-lowlink v) (get-index v))
+         (pop-scc)))
+  (for-each strong-connect vertices)
+  (reverse (mlist->list sccs)))
 
 (define code1 '(display-int ((λ (a b c) (* (+ a ((λ (x) (* x x)) b)) c)) 2 3 4))) ; should output 44
 (define code2
@@ -312,4 +410,7 @@
                        (hanoi src dst             1          )
                        (hanoi (other src dst)     dst        ))))])
      (hanoi 1 3 3)))
-                         
+
+(define code3 '(+ ((λ (x) (* x x)) 4) 3))
+
+; (inline-order 
